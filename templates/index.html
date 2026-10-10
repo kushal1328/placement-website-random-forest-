@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Placement Outlook | Predict Placed or Not placed</title>
+  <meta name="description" content="Enter a student's academic and skill details to get a predicted placement class and probability, plus the gaps worth closing first.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312203A'/%3E%3Cpath d='M8 17l5.5 5.5L24 10' fill='none' stroke='white' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <a class="skip" href="#predict">Skip to the predictor</a>
+
+  {# ---------- small helpers used further down ---------- #}
+  {% macro pct(x) %}{{ "%.1f"|format(x * 100) }}%{% endmacro %}
+  {% macro confusion(cm, title) %}
+    {% set total = cm.tn + cm.fp + cm.fn + cm.tp %}
+    <figure class="cm">
+      <figcaption>{{ title }}</figcaption>
+      <div class="cm-grid">
+        <span></span><span class="cm-head">Predicted<br>not placed</span><span class="cm-head">Predicted<br>placed</span>
+        <span class="cm-side">Actually not placed</span>
+        <b class="cm-cell" style="--v: {{ cm.tn / total }}">{{ "{:,}".format(cm.tn) }}<small>correct</small></b>
+        <b class="cm-cell err">{{ "{:,}".format(cm.fp) }}<small>false positives</small></b>
+        <span class="cm-side">Actually placed</span>
+        <b class="cm-cell err">{{ "{:,}".format(cm.fn) }}<small>false negatives</small></b>
+        <b class="cm-cell" style="--v: {{ cm.tp / total }}">{{ "{:,}".format(cm.tp) }}<small>correct</small></b>
+      </div>
+    </figure>
+  {% endmacro %}
+  {% set rf = info.models.random_forest %}
+  {% set lr = info.models.logistic_regression %}
+
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="#top" aria-label="Placement Outlook, home">
+        <svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/><path d="M8 17l5.5 5.5L24 10" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Placement Outlook</span>
+      </a>
+      <nav class="nav" aria-label="Sections">
+        <a href="#predict">Predict</a>
+        <a href="#how">How it works</a>
+        <a href="#performance">Performance</a>
+        <a href="#drivers">Key factors</a>
+        <a href="#responsible">Responsible use</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="wrap intro">
+      <h1>Check your placement outlook</h1>
+      <p class="lead">Enter your marks and skills. You get a predicted result, <strong>Placed</strong> or <strong>Not placed</strong>, the probability behind it, and the gaps worth closing first.</p>
+    </section>
+
+    {# ================= THE TOOL ================= #}
+    <section id="predict" class="wrap tool">
+      <form id="student-form" class="form" novalidate>
+        <div class="samples">
+          <span class="samples-label">Start from a sample</span>
+          <button type="button" class="btn btn-quiet" data-sample="strong">Strong profile</button>
+          <button type="button" class="btn btn-quiet" data-sample="onegap">One gap away</button>
+          <button type="button" class="btn btn-quiet" data-sample="atrisk">At risk</button>
+        </div>
+
+        {% for g in form_groups %}
+        <div class="group" role="group" aria-labelledby="g-{{ loop.index }}">
+          <h3 id="g-{{ loop.index }}">{{ g.title }}</h3>
+          <div class="group-grid">
+            {% for f in g.fields %}
+            <div class="field" data-field="{{ f.name }}">
+              <div class="field-top">
+                <label for="n-{{ f.name }}">{{ f.label }}</label>
+                <input class="num" id="n-{{ f.name }}" name="{{ f.name }}" type="number" inputmode="decimal"
+                       min="{{ f.min }}" max="{{ f.max }}" step="{{ f.step }}" value="{{ '%g'|format(f.value) }}"
+                       aria-describedby="h-{{ f.name }} e-{{ f.name }}" required>
+              </div>
+              <input class="range" type="range" tabindex="-1" aria-hidden="true"
+                     min="{{ f.min }}" max="{{ f.max }}" step="{{ f.step }}" value="{{ '%g'|format(f.value) }}">
+              <p class="hint" id="h-{{ f.name }}">{{ f.hint }}. Range {{ '%g'|format(f.min) }} to {{ '%g'|format(f.max) }}.</p>
+              <p class="error" id="e-{{ f.name }}" role="alert" hidden></p>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+
+        <div class="group" role="group" aria-labelledby="g-prog">
+          <h3 id="g-prog">Programme</h3>
+          <div class="group-grid">
+            <div class="field" data-field="Degree">
+              <label for="n-Degree">Degree</label>
+              <select class="select" id="n-Degree" name="Degree" aria-describedby="e-Degree">
+                {% for d in degrees %}<option value="{{ d }}" {{ 'selected' if d == defaults.Degree }}>{{ d }}</option>{% endfor %}
+              </select>
+              <p class="error" id="e-Degree" role="alert" hidden></p>
+            </div>
+            <div class="field" data-field="Branch">
+              <label for="n-Branch">Branch</label>
+              <select class="select" id="n-Branch" name="Branch" aria-describedby="e-Branch">
+                {% for b in branches %}<option value="{{ b }}" {{ 'selected' if b == defaults.Branch }}>{{ b }}</option>{% endfor %}
+              </select>
+              <p class="error" id="e-Branch" role="alert" hidden></p>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="btn btn-primary" id="submit-btn">Predict my result</button>
+          <button type="button" class="btn btn-quiet" id="reset-btn">Reset form</button>
+        </div>
+      </form>
+
+      <aside class="slip" id="slip" aria-label="Prediction result">
+        <div class="slip-head">
+          <h2 class="slip-title">Result slip</h2>
+          <span class="slip-sub">Random Forest, {{ "{:,}".format(info.dataset.rows) }} students</span>
+        </div>
+        <div id="slip-body" aria-live="polite">
+          <div class="pending">
+            <div class="stamp-ghost">Awaiting result</div>
+            <p>Fill in the form or pick a sample profile, then choose <strong>Predict my result</strong>. The class and probability appear here.</p>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    {# ================= HOW IT WORKS ================= #}
+    <section id="how" class="section alt">
+      <div class="wrap two-col">
+        <div>
+          <h2>How the prediction is made</h2>
+          <p>Your details go into a Random Forest: 200 decision trees trained on {{ "{:,}".format(info.dataset.rows) }} past students. Each tree votes <em>Placed</em> or <em>Not placed</em>. The share of trees voting Placed is the <strong>probability</strong>. The <strong>class</strong> follows from it: a probability of {{ "%.2f"|format(info.threshold) }} or higher is Placed, anything lower is Not placed.</p>
+          <p>A second, simpler model, Logistic Regression, makes its own estimate as a cross-check. When the two models disagree, the result slip says so.</p>
+        </div>
+        <dl class="defs">
+          <div><dt>Used as inputs</dt><dd>CGPA, aptitude score, backlogs, internships, projects, certifications, coding, communication and soft skills, degree and branch.</dd></div>
+          <div><dt>Left out on purpose</dt><dd>Student ID, because it is only a label. Gender and age, so a prediction can never depend on them.</dd></div>
+          <div><dt>Trained and tested</dt><dd>{{ "{:,}".format(info.dataset.rows - info.dataset.test_rows) }} students for learning. {{ "{:,}".format(info.dataset.test_rows) }} were held back and used only for testing.</dd></div>
+          <div><dt>Class balance</dt><dd>{{ pct(info.dataset.placement_rate) }} of students in the data were placed, so a model that always answered "Not placed" would still be right {{ pct(1 - info.dataset.placement_rate) }} of the time. That is why we check more than accuracy.</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    {# ================= PERFORMANCE ================= #}
+    <section id="performance" class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>How well it works</h2>
+          <p>Both models were tested on {{ "{:,}".format(info.dataset.test_rows) }} students they never saw during training.</p>
+        </div>
+
+        <div class="scroll">
+          <table class="table table-metrics">
+            <caption class="sr-only">Test results for the two models</caption>
+            <thead><tr><th scope="col">Measure</th><th scope="col">Random Forest</th><th scope="col">Logistic Regression</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">Accuracy<small>Share of all predictions that were right</small></th><td>{{ pct(rf.accuracy) }}</td><td>{{ pct(lr.accuracy) }}</td></tr>
+              <tr><th scope="row">Precision<small>When it says Placed, how often that is right</small></th><td>{{ pct(rf.precision) }}</td><td>{{ pct(lr.precision) }}</td></tr>
+              <tr><th scope="row">Recall<small>Share of truly placed students it found</small></th><td>{{ pct(rf.recall) }}</td><td>{{ pct(lr.recall) }}</td></tr>
+              <tr><th scope="row">F1-score<small>Balance of precision and recall</small></th><td>{{ pct(rf.f1) }}</td><td>{{ pct(lr.f1) }}</td></tr>
+              <tr><th scope="row">ROC-AUC<small>How well it ranks placed above not-placed students (0.5 is a coin flip, 1.0 is perfect)</small></th><td>{{ "%.3f"|format(rf.roc_auc) }}</td><td>{{ "%.3f"|format(lr.roc_auc) }}</td></tr>
+              <tr><th scope="row">ROC-AUC, 5-fold check<small>Repeated on five different slices of the training data</small></th><td>{{ "%.3f"|format(rf.cv_roc_auc_mean) }}</td><td>{{ "%.3f"|format(lr.cv_roc_auc_mean) }}</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="charts">
+          {{ confusion(rf.confusion_matrix, "Random Forest, confusion matrix") }}
+          {{ confusion(lr.confusion_matrix, "Logistic Regression, confusion matrix") }}
+          <figure class="roc-fig">
+            <figcaption>ROC curves</figcaption>
+            <svg id="roc" viewBox="0 0 320 316" role="img" aria-label="ROC curves for both models. The Random Forest curve hugs the top-left corner; the Logistic Regression curve bows above the diagonal."></svg>
+            <div class="legend"><span class="sw sw-rf"></span>Random Forest <span class="sw sw-lr"></span>Logistic Regression</div>
+          </figure>
+        </div>
+
+        <div class="note">
+          <h3>Why does the Random Forest score about 100%?</h3>
+          <p>Real placement outcomes are never perfectly predictable, so a perfect score is a warning, not a trophy. In this dataset the labels follow strict cut-offs. For example, no student with a coding skill below 5 was placed. Decision trees capture cut-offs exactly, so the forest recovers them without error. Logistic Regression assumes effects add up smoothly, which is why it lands at {{ pct(lr.accuracy) }}. Expect lower accuracy on real placement data, where interviews and hiring conditions also matter.</p>
+        </div>
+      </div>
+    </section>
+
+    {# ================= DRIVERS ================= #}
+    <section id="drivers" class="section alt">
+      <div class="wrap two-col">
+        <div>
+          <h2>What drives the result</h2>
+          <p>Each bar shows how much a measure helped the Random Forest separate placed from not-placed students. Measures that move together, such as projects, coding skills and certifications, share credit, so a short bar does not always mean a small effect.</p>
+          <ul class="bars">
+            {% set top = info.importance[0].value %}
+            {% for item in info.importance %}
+            <li class="bar-row">
+              <span class="bar-label">{{ item.label }}</span>
+              <span class="bar-track"><span class="bar-fill" style="width: {{ (item.value / top * 100)|round(1) }}%"></span></span>
+              <span class="bar-val">{{ "%.1f"|format(item.value * 100) }}%</span>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        <div>
+          <h2>Minimum levels in the data</h2>
+          <p>These are the lowest levels seen among placed students. Nobody below them was placed.</p>
+          <div class="scroll">
+            <table class="table table-compact">
+              <caption class="sr-only">Minimum levels found among placed students</caption>
+              <thead><tr><th scope="col">Measure</th><th scope="col">Needs</th><th scope="col">Students below it</th><th scope="col">Placed</th></tr></thead>
+              <tbody>
+                {% for key, c in info.cutoffs.items() %}
+                <tr>
+                  <th scope="row">{{ info.labels[key] }}</th>
+                  <td>{{ 'at least' if c.direction == 'min' else 'at most' }} {{ '%g'|format(c.value) }}</td>
+                  <td>{{ "{:,}".format(c.students_outside) }}</td>
+                  <td>{{ c.placed_outside }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <p class="fine">Meeting every minimum is necessary but not enough. For most measures the placement rate keeps rising with each step above the minimum.</p>
+        </div>
+      </div>
+    </section>
+
+    {# ================= RESPONSIBLE USE ================= #}
+    <section id="responsible" class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Using predictions responsibly</h2>
+        </div>
+        <div class="principles">
+          <div>
+            <h3>Support, not selection</h3>
+            <p>Use a prediction to find students who could use coaching early. Never use it to rank students, limit their opportunities or decide who gets an interview.</p>
+          </div>
+          <div>
+            <h3>Two kinds of mistakes</h3>
+            <p>A <strong>false positive</strong> says Placed when the student was not, which can create false comfort. A <strong>false negative</strong> says Not placed when the student was, which can discourage someone. In a support setting false negatives do more harm, so a counsellor should review every Not placed result.</p>
+          </div>
+          <div>
+            <h3>A probability is not a promise</h3>
+            <p>A probability of 70% means that about 70 in 100 past students with similar profiles were placed. Any one student can land on either side.</p>
+          </div>
+          <div>
+            <h3>Patterns, not causes</h3>
+            <p>The model finds patterns in past data. It does not prove that raising one score will cause a placement, so treat the suggestions as places to focus, not guarantees.</p>
+          </div>
+        </div>
+
+        <h3 class="table-title">Fairness check by gender</h3>
+        <p class="fine wide">Gender is not an input to the model. We still compare its results across groups on the test students.</p>
+        <div class="scroll">
+          <table class="table table-compact">
+            <caption class="sr-only">Model results by gender</caption>
+            <thead><tr><th scope="col">Group</th><th scope="col">Students tested</th><th scope="col">Actually placed</th><th scope="col">Predicted placed</th><th scope="col">Recall</th></tr></thead>
+            <tbody>
+              {% for g in info.fairness %}
+              <tr><th scope="row">{{ g.group }}</th><td>{{ "{:,}".format(g.n) }}</td><td>{{ pct(g.actual_rate) }}</td><td>{{ pct(g.predicted_rate) }}</td><td>{{ pct(g.recall) }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <p>A student project built with Python, scikit-learn and Flask. Predictions are statistical estimates, not guarantees.</p>
+    </div>
+  </footer>
+
+  <script id="boot" type="application/json">{{ info|tojson }}</script>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
